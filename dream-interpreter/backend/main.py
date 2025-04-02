@@ -85,11 +85,18 @@ async def interpret_dream(dream_request: DreamRequest):
         
         # Create a prompt with the context
         prompt = f"""<|system|>
-You are DreamSense, a warm and empathetic dream interpreter with expertise in dream symbolism and psychology.
-Your task is to interpret dreams based STRICTLY on the provided dream dictionary references.
-DO NOT make up interpretations - rely ONLY on the provided references.
+You are DreamSense, a dream interpreter that ONLY uses the provided dream dictionary references to interpret dreams.
+You have NO knowledge of dream interpretation beyond what is explicitly provided in these references.
+NEVER make up interpretations or use your general knowledge about dreams.
 
-IMPORTANT: Your interpretation MUST be based on the dream dictionary references. If no relevant references are found, acknowledge this and provide only general supportive comments.
+STRICT RULES:
+1. ONLY use the provided dream dictionary references for your interpretation
+2. If a symbol is not in the references, do NOT interpret it
+3. Structure your response to directly reference the symbols found in the dream
+4. Begin by mentioning which symbols from the dream dictionary you identified
+5. For each symbol, explain its meaning according to the dream dictionary ONLY
+
+Here are your ONLY references for dream interpretation:
 
 {context}
 
@@ -116,6 +123,22 @@ Dream: {dream_text}
             
             logger.info(f"Generated interpretation: {interpretation[:100]}...")
             
+            # If we have relevant entries but they're not clearly reflected in the interpretation,
+            # enhance the response to explicitly mention them
+            if relevant_entries and len(relevant_entries) > 0:
+                # Check if the interpretation already mentions the symbols
+                mentions_symbols = any(entry["term"].lower() in interpretation.lower() for entry in relevant_entries[:3])
+                
+                if not mentions_symbols:
+                    # Create a more structured interpretation that explicitly uses the dream dictionary
+                    enhanced_interpretation = "Based on your dream, I've identified these important symbols:\n\n"
+                    
+                    for entry in relevant_entries[:5]:
+                        enhanced_interpretation += f"• {entry['term']}: {entry['details']}\n\n"
+                    
+                    enhanced_interpretation += "Considering these symbols together, your dream suggests: " + interpretation
+                    interpretation = enhanced_interpretation
+            
             # Convert relevant entries to DreamSymbol objects
             symbols = []
             for entry in relevant_entries:
@@ -125,13 +148,13 @@ Dream: {dream_text}
                     score=float(entry["score"])
                 ))
             
-            return DreamResponse(interpretation=interpretation, symbols=symbols)
+            return {"data": DreamResponse(interpretation=interpretation, symbols=symbols)}
         except Exception as e:
             logger.error(f"Error generating interpretation: {e}")
-            return DreamResponse(interpretation="I apologize, but I'm having trouble interpreting your dream right now. Please try again in a moment.", symbols=[])
+            return {"data": DreamResponse(interpretation="I apologize, but I'm having trouble interpreting your dream right now. Please try again in a moment.", symbols=[])}
     except Exception as e:
         logger.error(f"Error interpreting dream: {str(e)}")
-        return DreamResponse(interpretation="I'm having trouble interpreting your dream right now. Please try again later.", error=str(e))
+        return {"data": DreamResponse(interpretation="I'm having trouble interpreting your dream right now. Please try again later.", error=str(e))}
 
 if __name__ == "__main__":
     import uvicorn

@@ -61,7 +61,7 @@ class DreamDictionaryRAG:
             logger.error(f"Error retrieving relevant entries: {e}")
             return []
 
-    def extract_keywords(self, text: str, max_keywords: int = 10) -> List[str]:
+    def extract_keywords(self, text: str, max_keywords: int = 15) -> List[str]:
         """Extract potential dream symbols from the input text."""
         try:
             # Normalize text
@@ -72,7 +72,16 @@ class DreamDictionaryRAG:
             bigrams = [words[i] + ' ' + words[i+1] for i in range(len(words)-1)]
             trigrams = [words[i] + ' ' + words[i+1] + ' ' + words[i+2] for i in range(len(words)-2)]
             
-            all_potential_terms = words + bigrams + trigrams
+            # Common stopwords to filter out
+            stopwords = ['the', 'and', 'was', 'were', 'that', 'this', 'with', 'for', 'about', 
+                         'have', 'had', 'has', 'not', 'but', 'what', 'when', 'where', 'who',
+                         'how', 'which', 'there', 'then', 'than', 'them', 'they', 'she', 'he',
+                         'his', 'her', 'its', 'our', 'your', 'their', 'from', 'very', 'just']
+            
+            # Filter out stopwords from individual words
+            filtered_words = [word for word in words if word not in stopwords and len(word) > 3]
+            
+            all_potential_terms = filtered_words + bigrams + trigrams
             
             # Direct term matching with the dictionary
             matched_terms = []
@@ -90,7 +99,7 @@ class DreamDictionaryRAG:
             keywords = []
             for potential_term in all_potential_terms:
                 # Skip very short terms and common words
-                if len(potential_term) <= 3 or potential_term in ['the', 'and', 'was', 'were', 'that', 'this', 'with', 'for', 'about']:
+                if len(potential_term) <= 3 or potential_term in stopwords:
                     continue
                     
                 # Check if any dictionary term contains this word
@@ -103,6 +112,16 @@ class DreamDictionaryRAG:
                 if len(keywords) >= max_keywords:
                     break
             
+            # If we still don't have enough keywords, add the most important words from the text
+            if len(keywords) < 5 and filtered_words:
+                # Add the longest words as they tend to be more meaningful
+                sorted_words = sorted(filtered_words, key=len, reverse=True)
+                for word in sorted_words:
+                    if word not in keywords and len(word) > 4:
+                        keywords.append(word)
+                    if len(keywords) >= max_keywords:
+                        break
+            
             return list(set(keywords))  # Remove duplicates
         except Exception as e:
             logger.error(f"Error extracting keywords: {e}")
@@ -113,6 +132,7 @@ class DreamDictionaryRAG:
         matches = []
         text_lower = text.lower()
         
+        # First, check for exact matches
         for i, row in self.df.iterrows():
             term_lower = row['Term_lower']
             if term_lower in text_lower:
@@ -123,6 +143,32 @@ class DreamDictionaryRAG:
                     'score': 1.0  # Direct matches get highest score
                 })
         
+        # If we don't have enough exact matches, try partial matches
+        if len(matches) < 3:
+            # Get all words from the text
+            words = re.findall(r'\b\w+\b', text_lower)
+            significant_words = [w for w in words if len(w) > 4]
+            
+            for i, row in self.df.iterrows():
+                term_lower = row['Term_lower']
+                term_words = re.findall(r'\b\w+\b', term_lower)
+                
+                # Check if any significant word from the text is in the term
+                for word in significant_words:
+                    if word in term_words and len(word) > 4:
+                        # Check if this term is already in matches
+                        if not any(m['term'] == row['Term'] for m in matches):
+                            matches.append({
+                                'term': row['Term'],
+                                'details': row['Details'],
+                                'summary': row['Summary'],
+                                'score': 0.8  # Partial matches get lower score
+                            })
+                            break
+                
+                if len(matches) >= 5:
+                    break
+        
         return matches
 
     def generate_context(self, dream_text: str) -> Tuple[str, List[Dict]]:
@@ -131,25 +177,21 @@ class DreamDictionaryRAG:
             # First try direct lookup for exact term matches
             direct_matches = self.direct_term_lookup(dream_text)
             
-            if direct_matches:
-                logger.info(f"Found {len(direct_matches)} direct term matches in the dream")
-                all_entries = direct_matches
-            else:
-                # Extract keywords
-                keywords = self.extract_keywords(dream_text)
-                logger.info(f"Extracted keywords: {keywords}")
-                
-                # Retrieve relevant entries for the entire dream text
-                text_entries = self.retrieve_relevant_entries(dream_text, top_k=3)
-                
-                # Also retrieve entries for each keyword
-                keyword_entries = []
-                for keyword in keywords:
-                    entries = self.retrieve_relevant_entries(keyword, top_k=1)
-                    keyword_entries.extend(entries)
-                
-                # Combine entries
-                all_entries = text_entries + keyword_entries
+            # Extract keywords
+            keywords = self.extract_keywords(dream_text)
+            logger.info(f"Extracted keywords: {keywords}")
+            
+            # Retrieve relevant entries for the entire dream text
+            text_entries = self.retrieve_relevant_entries(dream_text, top_k=5)
+            
+            # Also retrieve entries for each keyword
+            keyword_entries = []
+            for keyword in keywords:
+                entries = self.retrieve_relevant_entries(keyword, top_k=2)
+                keyword_entries.extend(entries)
+            
+            # Combine all entries with direct matches having highest priority
+            all_entries = direct_matches + text_entries + keyword_entries
             
             # Deduplicate entries
             unique_entries = []
@@ -164,12 +206,12 @@ class DreamDictionaryRAG:
             unique_entries.sort(key=lambda x: x['score'], reverse=True)
             
             # Limit to top entries to avoid context length issues
-            top_entries = unique_entries[:5]
+            top_entries = unique_entries[:8]  # Increased from 5 to 8 for more context
             
             # Format context for LLM
             context = "Dream Dictionary References:\n\n"
-            for entry in top_entries:
-                context += f"Symbol: {entry['term']}\n"
+            for i, entry in enumerate(top_entries):
+                context += f"Symbol {i+1}: {entry['term']}\n"
                 context += f"Meaning: {entry['details']}\n\n"
             
             logger.info(f"Generated context with {len(top_entries)} dream symbols")
